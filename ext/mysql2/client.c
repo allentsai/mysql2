@@ -313,6 +313,11 @@ static VALUE nogvl_use_result(void *ptr) {
   return nogvl_do_result(ptr, 1);
 }
 
+/* call-seq:
+ *    client.async_result
+ *
+ * Returns the result for the last async issued query.
+ */
 static VALUE rb_mysql_client_async_result(VALUE self) {
   MYSQL_RES * result;
   VALUE resultObj;
@@ -447,6 +452,12 @@ static VALUE finish_and_mark_inactive(void *args) {
 }
 #endif
 
+/* call-seq:
+ *    client.query(sql, options = {})
+ *
+ * Query the database with +sql+, with optional +options+.  For the possible
+ * options, see @@default_query_options on the Mysql2::Client class.
+ */
 static VALUE rb_mysql_client_query(int argc, VALUE * argv, VALUE self) {
 #ifndef _WIN32
   struct async_query_args async_args;
@@ -515,6 +526,11 @@ static VALUE rb_mysql_client_query(int argc, VALUE * argv, VALUE self) {
 #endif
 }
 
+/* call-seq:
+ *    client.escape(string)
+ *
+ * Escape +string+ so that it may be used in a SQL statement.
+ */
 static VALUE rb_mysql_client_real_escape(VALUE self, VALUE str) {
   unsigned char *newStr;
   VALUE rb_str;
@@ -598,6 +614,11 @@ static VALUE rb_mysql_client_options(VALUE self, VALUE option, VALUE value) {
   return _mysql_client_options(self, opt, value);
 }
 
+/* call-seq:
+ *    client.info
+ *
+ * Returns a string that represents the client library version.
+ */
 static VALUE rb_mysql_client_info(VALUE self) {
   VALUE version, client_info;
 #ifdef HAVE_RUBY_ENCODING_H
@@ -624,6 +645,11 @@ static VALUE rb_mysql_client_info(VALUE self) {
   return version;
 }
 
+/* call-seq:
+ *    client.server_info
+ *
+ * Returns a string that represents the server version number
+ */
 static VALUE rb_mysql_client_server_info(VALUE self) {
   VALUE version, server_info;
 #ifdef HAVE_RUBY_ENCODING_H
@@ -651,6 +677,11 @@ static VALUE rb_mysql_client_server_info(VALUE self) {
   return version;
 }
 
+/* call-seq:
+ *    client.socket
+ *
+ * Return the file descriptor number for this client.
+ */
 static VALUE rb_mysql_client_socket(VALUE self) {
   GET_CLIENT(self);
 #ifndef _WIN32
@@ -662,12 +693,24 @@ static VALUE rb_mysql_client_socket(VALUE self) {
 #endif
 }
 
+/* call-seq:
+ *    client.last_id
+ *
+ * Returns the value generated for an AUTO_INCREMENT column by the previous INSERT or UPDATE
+ * statement.
+ */
 static VALUE rb_mysql_client_last_id(VALUE self) {
   GET_CLIENT(self);
   REQUIRE_OPEN_DB(wrapper);
   return ULL2NUM(mysql_insert_id(wrapper->client));
 }
 
+/* call-seq:
+ *    client.affected_rows
+ *
+ * returns the number of rows changed, deleted, or inserted by the last statement
+ * if it was an UPDATE, DELETE, or INSERT.
+ */
 static VALUE rb_mysql_client_affected_rows(VALUE self) {
   my_ulonglong retVal;
   GET_CLIENT(self);
@@ -680,6 +723,11 @@ static VALUE rb_mysql_client_affected_rows(VALUE self) {
   return ULL2NUM(retVal);
 }
 
+/* call-seq:
+ *    client.thread_id
+ *
+ * Returns the thread ID of the current connection.
+ */
 static VALUE rb_mysql_client_thread_id(VALUE self) {
   unsigned long retVal;
   GET_CLIENT(self);
@@ -698,6 +746,12 @@ static VALUE nogvl_select_db(void *ptr) {
     return Qfalse;
 }
 
+/* call-seq:
+ *    client.select_db(name)
+ *
+ * Causes the database specified by +name+ to become the default (current)
+ * database on the connection specified by mysql.
+ */
 static VALUE rb_mysql_client_select_db(VALUE self, VALUE db)
 {
   struct nogvl_select_db_args args;
@@ -720,6 +774,14 @@ static VALUE nogvl_ping(void *ptr) {
   return mysql_ping(client) == 0 ? Qtrue : Qfalse;
 }
 
+/* call-seq:
+ *    client.ping
+ *
+ * Checks whether the connection to the server is working. If the connection
+ * has gone down and auto-reconnect is enabled an attempt to reconnect is made.
+ * If the connection is down and auto-reconnect is disabled, ping returns an
+ * error.
+ */
 static VALUE rb_mysql_client_ping(VALUE self) {
   GET_CLIENT(self);
 
@@ -730,7 +792,70 @@ static VALUE rb_mysql_client_ping(VALUE self) {
   }
 }
 
+static VALUE rb_mysql_client_more_results(VALUE self)
+{
+  GET_CLIENT(self);
+    if (mysql_more_results(wrapper->client) == 0)
+      return Qfalse;
+    else
+      return Qtrue;
+}
+
+static VALUE rb_mysql_client_next_result(VALUE self)
+{
+    GET_CLIENT(self);
+    int ret;
+    ret = mysql_next_result(wrapper->client);
+    if (ret == 0)
+      return Qtrue;
+    else
+      return Qfalse;
+}
+
+
+static VALUE rb_mysql_client_store_result(VALUE self)
+{
+  MYSQL_RES * result;
+  VALUE resultObj;
 #ifdef HAVE_RUBY_ENCODING_H
+  mysql2_result_wrapper * result_wrapper;
+#endif
+  
+  
+  GET_CLIENT(self);
+  // MYSQL_RES* res = mysql_store_result(wrapper->client);
+  // if (res == NULL)
+  //    mysql_raise(wrapper->client);
+  // return mysqlres2obj(res);
+  
+  result = (MYSQL_RES *)rb_thread_blocking_region(nogvl_store_result, wrapper, RUBY_UBF_IO, 0);
+
+  if (result == NULL) {
+    if (mysql_errno(wrapper->client) != 0) {
+      rb_raise_mysql2_error(wrapper);
+    }
+    // no data and no error, so query was not a SELECT
+    return Qnil;
+  }
+
+  resultObj = rb_mysql_result_to_obj(result);
+  // pass-through query options for result construction later
+  rb_iv_set(resultObj, "@query_options", rb_funcall(rb_iv_get(self, "@query_options"), rb_intern("dup"), 0));
+
+#ifdef HAVE_RUBY_ENCODING_H
+  GetMysql2Result(resultObj, result_wrapper);
+  result_wrapper->encoding = wrapper->encoding;
+#endif
+  return resultObj;
+  
+}
+
+#ifdef HAVE_RUBY_ENCODING_H
+/* call-seq:
+ *    client.encoding
+ *
+ * Returns the encoding set on the client.
+ */
 static VALUE rb_mysql_client_encoding(VALUE self) {
   GET_CLIENT(self);
   return wrapper->encoding;
@@ -823,6 +948,9 @@ void init_mysql2_client() {
     }
   }
 
+#if 0
+  mMysql2      = rb_define_module("Mysql2"); Teach RDoc about Mysql2 constant.
+#endif
   cMysql2Client = rb_define_class_under(mMysql2, "Client", rb_cObject);
 
   rb_define_alloc_func(cMysql2Client, allocate);
@@ -841,7 +969,13 @@ void init_mysql2_client() {
   rb_define_method(cMysql2Client, "thread_id", rb_mysql_client_thread_id, 0);
   rb_define_method(cMysql2Client, "ping", rb_mysql_client_ping, 0);
   rb_define_method(cMysql2Client, "select_db", rb_mysql_client_select_db, 1);
+<<<<<<< HEAD
   rb_define_method(cMysql2Client, "options", rb_mysql_client_options, 1);
+=======
+  rb_define_method(cMysql2Client, "more_results", rb_mysql_client_more_results, 0);
+  rb_define_method(cMysql2Client, "next_result", rb_mysql_client_next_result, 0);
+  rb_define_method(cMysql2Client, "store_result", rb_mysql_client_store_result, 0);
+>>>>>>> cd443a94ecab37fb72bc9b9bf9f6f7537d03b838
 #ifdef HAVE_RUBY_ENCODING_H
   rb_define_method(cMysql2Client, "encoding", rb_mysql_client_encoding, 0);
 #endif
